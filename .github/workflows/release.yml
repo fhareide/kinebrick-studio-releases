@@ -7,10 +7,14 @@ name: Release
 # `--message-format short` so a failing build logs file:line and the message, not source lines.
 # Tests, fmt and clippy run in the private repo before a release, not here.
 #
-# Run it from the Actions tab or with:
+# Pushing a `v*` tag to the source repo releases it: the source repo's pre-push hook
+# (`tools/hooks/pre-push`) creates the same tag here, which builds the source at that tag and
+# publishes the release. By hand, from the Actions tab or with:
 #   gh workflow run release.yml -R fhareide/kinebrick-studio-releases -f ref=main -f tag=v0.1.0
 # Leave `tag` empty to get the packages as workflow artifacts without a release.
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       ref:
@@ -25,6 +29,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   SOURCE_REPO: fhareide/gbc-workshop
+  # A pushed tag builds the source repo's tag of the same name and releases it.
+  SOURCE_REF: ${{ github.event_name == 'push' && github.ref_name || inputs.ref }}
+  RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
 
 permissions:
   contents: write
@@ -48,10 +55,22 @@ jobs:
       run:
         shell: bash
     steps:
+      # The hook tags this repo just before the source repo's push lands, so give it a moment.
+      - name: Wait for the source tag
+        if: github.event_name == 'push'
+        env:
+          TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          for i in $(seq 1 24); do
+            if git ls-remote --exit-code "https://x-access-token:$TOKEN@github.com/$SOURCE_REPO.git" "refs/tags/$SOURCE_REF" > /dev/null; then exit 0; fi
+            sleep 5
+          done
+          echo "::error::$SOURCE_REF is not in $SOURCE_REPO after 2 minutes"
+          exit 1
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.SOURCE_REPO }}
-          ref: ${{ inputs.ref }}
+          ref: ${{ env.SOURCE_REF }}
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
@@ -65,10 +84,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libudev-dev
 
       - name: Version
-        env:
-          TAG: ${{ inputs.tag }}
         run: |
-          if [[ -n "$TAG" ]]; then v="${TAG#v}"; else v="$(git rev-parse --short HEAD)"; fi
+          if [[ -n "$RELEASE_TAG" ]]; then v="${RELEASE_TAG#v}"; else v="$(git rev-parse --short HEAD)"; fi
           echo "VERSION=$v" >> "$GITHUB_ENV"
           echo "PKG=kinebrick-studio-$v-${{ matrix.name }}" >> "$GITHUB_ENV"
           echo "SOURCE_SHA=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
@@ -156,7 +173,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: inputs.tag != ''
+    if: github.event_name == 'push' || inputs.tag != ''
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -167,8 +184,7 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
         run: |
-          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-            --title "Kinebrick Studio $TAG" \
+          gh release create "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Kinebrick Studio $RELEASE_TAG" \
             --notes "Windows: the installer (-setup.exe) or the portable zip. macOS: the .dmg (not notarized: right-click > Open on first launch). Linux: the .tar.gz."
