@@ -1,0 +1,174 @@
+name: Release
+
+# Builds Kinebrick Studio from the private source repo and publishes the packages here.
+#
+# The source is checked out with PRIVATE_REPO_TOKEN (a fine-grained token with read-only
+# Contents access to that one repo). It is never committed here. Compiler output uses
+# `--message-format short` so a failing build logs file:line and the message, not source lines.
+# Tests, fmt and clippy run in the private repo before a release, not here.
+#
+# Run it from the Actions tab or with:
+#   gh workflow run release.yml -R fhareide/kinebrick-studio-releases -f ref=main -f tag=v0.1.0
+# Leave `tag` empty to get the packages as workflow artifacts without a release.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or commit of the source repo to build"
+        type: string
+        default: main
+      tag:
+        description: "Release tag to publish (e.g. v0.1.0); empty = artifacts only"
+        type: string
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+  SOURCE_REPO: fhareide/gbc-workshop
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x86_64
+          # Universal binary (Apple silicon + Intel), packaged as an .app in a .dmg.
+          - os: macos-latest
+            name: macos-universal
+          # The oldest supported Ubuntu runner, so the binary runs on older glibc versions too.
+          - os: ubuntu-22.04
+            name: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.name }}
+      - name: Linux window-system headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libudev-dev
+
+      - name: Version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [[ -n "$TAG" ]]; then v="${TAG#v}"; else v="$(git rev-parse --short HEAD)"; fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "PKG=kinebrick-studio-$v-${{ matrix.name }}" >> "$GITHUB_ENV"
+          echo "SOURCE_SHA=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            cargo build --release --locked --message-format short -p gbc_app --target aarch64-apple-darwin
+            cargo build --release --locked --message-format short -p gbc_app --target x86_64-apple-darwin
+          else
+            cargo build --release --locked --message-format short -p gbc_app
+          fi
+
+      # Every package holds the executable, `data/` (part metadata the app looks for beside it),
+      # the README and the font licences.
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir -p "dist/$PKG"
+          cp target/release/kinebrick-studio.exe "dist/$PKG/"
+          cp -r data README.md crates/gbc_app/assets/fonts/*-LICENSE.txt "dist/$PKG/"
+          cd dist && 7z a -tzip "$PKG.zip" "$PKG" > /dev/null
+          echo "ASSET=dist/$PKG.zip" >> "$GITHUB_ENV"
+
+      # The per-user installer (packaging/windows in the source repo), from the same folder as the zip.
+      - name: Installer (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install innosetup -y --no-progress > /dev/null
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" -Q "-DAppVersion=$VERSION" "-DSourceDir=$(cygpath -w "$PWD/dist/$PKG")" \
+            "-DOutputBase=$PKG-setup" packaging/windows/kinebrick-studio.iss
+          echo "INSTALLER=dist/$PKG-setup.exe" >> "$GITHUB_ENV"
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p "dist/$PKG"
+          cp target/release/kinebrick-studio "dist/$PKG/"
+          cp -r data README.md crates/gbc_app/assets/fonts/*-LICENSE.txt "dist/$PKG/"
+          tar -C dist -czf "dist/$PKG.tar.gz" "$PKG"
+          echo "ASSET=dist/$PKG.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          app="dist/Kinebrick Studio.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          lipo -create -output "$app/Contents/MacOS/kinebrick-studio" \
+            target/aarch64-apple-darwin/release/kinebrick-studio target/x86_64-apple-darwin/release/kinebrick-studio
+          cp -r data README.md crates/gbc_app/assets/fonts/*-LICENSE.txt "$app/Contents/Resources/"
+          cp crates/gbc_app/assets/logo/kinebrick-studio.icns "$app/Contents/Resources/"
+          cat > "$app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>Kinebrick Studio</string>
+            <key>CFBundleDisplayName</key><string>Kinebrick Studio</string>
+            <key>CFBundleIdentifier</key><string>io.github.fhareide.kinebrick-studio</string>
+            <key>CFBundleExecutable</key><string>kinebrick-studio</string>
+            <key>CFBundleIconFile</key><string>kinebrick-studio</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          EOF
+          # Ad-hoc signature: not notarized, so the first launch needs right-click > Open.
+          codesign --force --deep --sign - "$app"
+          hdiutil create -volname "Kinebrick Studio" -srcfolder "$app" -ov -format UDZO "dist/$PKG.dmg"
+          echo "ASSET=dist/$PKG.dmg" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: ${{ env.PKG }}-setup
+          path: ${{ env.INSTALLER }}
+          if-no-files-found: error
+
+  release:
+    if: inputs.tag != ''
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Kinebrick Studio $TAG" \
+            --notes "Windows: the installer (-setup.exe) or the portable zip. macOS: the .dmg (not notarized: right-click > Open on first launch). Linux: the .tar.gz."
