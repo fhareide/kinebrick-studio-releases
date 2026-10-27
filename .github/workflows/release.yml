@@ -28,7 +28,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  SOURCE_REPO: fhareide/gbc-workshop
+  SOURCE_REPO: fhareide/kinebrick-studio
   # A pushed tag builds the source repo's tag of the same name and releases it.
   SOURCE_REF: ${{ github.event_name == 'push' && github.ref_name || inputs.ref }}
   RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
@@ -93,10 +93,10 @@ jobs:
       - name: Build
         run: |
           if [[ "$RUNNER_OS" == macOS ]]; then
-            cargo build --release --locked --message-format short -p gbc_app --target aarch64-apple-darwin
-            cargo build --release --locked --message-format short -p gbc_app --target x86_64-apple-darwin
+            cargo build --release --locked --message-format short -p kb_app --target aarch64-apple-darwin
+            cargo build --release --locked --message-format short -p kb_app --target x86_64-apple-darwin
           else
-            cargo build --release --locked --message-format short -p gbc_app
+            cargo build --release --locked --message-format short -p kb_app
           fi
 
       # Every package holds the executable, `data/` (part metadata the app looks for beside it),
@@ -106,7 +106,7 @@ jobs:
         run: |
           mkdir -p "dist/$PKG"
           cp target/release/kinebrick-studio.exe "dist/$PKG/"
-          cp -r data README.md crates/gbc_app/assets/fonts/*-LICENSE.txt "dist/$PKG/"
+          cp -r data README.md crates/kb_app/assets/fonts/*-LICENSE.txt "dist/$PKG/"
           cd dist && 7z a -tzip "$PKG.zip" "$PKG" > /dev/null
           echo "ASSET=dist/$PKG.zip" >> "$GITHUB_ENV"
 
@@ -124,7 +124,7 @@ jobs:
         run: |
           mkdir -p "dist/$PKG"
           cp target/release/kinebrick-studio "dist/$PKG/"
-          cp -r data README.md crates/gbc_app/assets/fonts/*-LICENSE.txt "dist/$PKG/"
+          cp -r data README.md crates/kb_app/assets/fonts/*-LICENSE.txt "dist/$PKG/"
           tar -C dist -czf "dist/$PKG.tar.gz" "$PKG"
           echo "ASSET=dist/$PKG.tar.gz" >> "$GITHUB_ENV"
 
@@ -135,8 +135,8 @@ jobs:
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           lipo -create -output "$app/Contents/MacOS/kinebrick-studio" \
             target/aarch64-apple-darwin/release/kinebrick-studio target/x86_64-apple-darwin/release/kinebrick-studio
-          cp -r data README.md crates/gbc_app/assets/fonts/*-LICENSE.txt "$app/Contents/Resources/"
-          cp crates/gbc_app/assets/logo/kinebrick-studio.icns "$app/Contents/Resources/"
+          cp -r data README.md crates/kb_app/assets/fonts/*-LICENSE.txt "$app/Contents/Resources/"
+          cp crates/kb_app/assets/logo/kinebrick-studio.icns "$app/Contents/Resources/"
           cat > "$app/Contents/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
