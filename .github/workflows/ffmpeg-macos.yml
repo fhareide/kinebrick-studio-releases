@@ -99,5 +99,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "ffmpeg-$VERSION-$BUILD" "$NAME.tar.xz" "ffmpeg-$VERSION.tar.xz" \
-            --repo "$GITHUB_REPOSITORY" --latest=false --title "FFmpeg $VERSION for macOS" \
+            --repo "$GITHUB_REPOSITORY" --prerelease --title "FFmpeg $VERSION for macOS" \
             --notes "The FFmpeg that Kinebrick Studio's Install FFmpeg button fetches on a Mac: LGPL, universal, built from the source attached here by [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
