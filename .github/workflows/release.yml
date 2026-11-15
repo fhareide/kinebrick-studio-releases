@@ -37,7 +37,45 @@ permissions:
   contents: write
 
 jobs:
+  # The programs that run programmable hubs' Pybricks programs (`kinebrick-hub`, `mpy-cross`;
+  # tools/hub/build.sh in the source repo) for Linux, and the files their build generates, which
+  # the Windows build compiles again.
+  hub-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      # The hook tags this repo just before the source repo's push lands, so give it a moment.
+      - name: Wait for the source tag
+        if: github.event_name == 'push'
+        env:
+          TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          for i in $(seq 1 24); do
+            if git ls-remote --exit-code "https://x-access-token:$TOKEN@github.com/$SOURCE_REPO.git" "refs/tags/$SOURCE_REF" > /dev/null; then exit 0; fi
+            sleep 5
+          done
+          echo "::error::$SOURCE_REF is not in $SOURCE_REPO after 2 minutes"
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ env.SOURCE_REF }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          persist-credentials: false
+      - name: Build the hub programs
+        run: bash tools/hub/build.sh linux dist/hub dist/hub-generated.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hub-linux
+          path: dist/hub/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hub-generated
+          path: dist/hub-generated.tar.gz
+          if-no-files-found: error
+
   build:
+    needs: hub-linux
     strategy:
       fail-fast: false
       matrix:
@@ -99,13 +137,33 @@ jobs:
             cargo build --release --locked --message-format short -p kb_app
           fi
 
-      # Every package holds the executable, `data/` (part metadata the app looks for beside it),
-      # the README and the font licences.
+      # The hub programs beside the app (dist/hub): Linux's from the hub-linux job; Windows
+      # compiles that build's generated files with LLVM's clang; macOS builds its own.
+      - uses: actions/download-artifact@v4
+        if: runner.os != 'macOS'
+        with:
+          name: ${{ runner.os == 'Windows' && 'hub-generated' || 'hub-linux' }}
+          path: ${{ runner.os == 'Windows' && 'dist/hub-generated' || 'dist/hub' }}
+      - uses: microsoft/setup-msbuild@v2
+        if: runner.os == 'Windows'
+      - name: Hub programs
+        run: |
+          case "$RUNNER_OS" in
+            Windows)
+              [[ -x "/c/Program Files/LLVM/bin/clang.exe" ]] || choco install llvm -y --no-progress > /dev/null
+              bash tools/hub/build.sh windows dist/hub dist/hub-generated/hub-generated.tar.gz ;;
+            macOS) bash tools/hub/build.sh macos dist/hub ;;
+            # Artifacts lose the executable bit.
+            Linux) chmod +x dist/hub/kinebrick-hub dist/hub/mpy-cross ;;
+          esac
+
+      # Every package holds the executable and the hub programs beside it, `data/` (part metadata
+      # the app looks for beside it), the README and the licences.
       - name: Package (Windows)
         if: runner.os == 'Windows'
         run: |
           mkdir -p "dist/$PKG"
-          cp target/release/kinebrick-studio.exe "dist/$PKG/"
+          cp target/release/kinebrick-studio.exe dist/hub/* "dist/$PKG/"
           cp -r data README.md crates/kb_app/assets/fonts/*-LICENSE.txt "dist/$PKG/"
           cd dist && 7z a -tzip "$PKG.zip" "$PKG" > /dev/null
           echo "ASSET=dist/$PKG.zip" >> "$GITHUB_ENV"
@@ -123,7 +181,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           mkdir -p "dist/$PKG"
-          cp target/release/kinebrick-studio "dist/$PKG/"
+          cp target/release/kinebrick-studio dist/hub/* "dist/$PKG/"
           cp -r data README.md crates/kb_app/assets/fonts/*-LICENSE.txt "dist/$PKG/"
           tar -C dist -czf "dist/$PKG.tar.gz" "$PKG"
           echo "ASSET=dist/$PKG.tar.gz" >> "$GITHUB_ENV"
@@ -135,7 +193,8 @@ jobs:
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           lipo -create -output "$app/Contents/MacOS/kinebrick-studio" \
             target/aarch64-apple-darwin/release/kinebrick-studio target/x86_64-apple-darwin/release/kinebrick-studio
-          cp -r data README.md crates/kb_app/assets/fonts/*-LICENSE.txt "$app/Contents/Resources/"
+          cp dist/hub/kinebrick-hub dist/hub/mpy-cross "$app/Contents/MacOS/"
+          cp -r data README.md crates/kb_app/assets/fonts/*-LICENSE.txt dist/hub/PYBRICKS-LICENSE.txt "$app/Contents/Resources/"
           cp crates/kb_app/assets/logo/kinebrick-studio.icns "$app/Contents/Resources/"
           cat > "$app/Contents/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
@@ -155,7 +214,9 @@ jobs:
           </dict>
           </plist>
           EOF
-          # Ad-hoc signature: not notarized, so the first launch needs right-click > Open.
+          # Ad-hoc signature: not notarized, so the first launch needs right-click > Open. The
+          # hub programs are signed on their own first (the app starts them).
+          codesign --force --sign - "$app/Contents/MacOS/kinebrick-hub" "$app/Contents/MacOS/mpy-cross"
           codesign --force --deep --sign - "$app"
           hdiutil create -volname "Kinebrick Studio" -srcfolder "$app" -ov -format UDZO "dist/$PKG.dmg"
           echo "ASSET=dist/$PKG.dmg" >> "$GITHUB_ENV"
