@@ -62,7 +62,10 @@ jobs:
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           persist-credentials: false
       - name: Build the hub programs
-        run: bash tools/hub/build.sh linux dist/hub dist/hub-generated.tar.gz
+        run: |
+          # The script prints only the log's error lines; show its end too when it fails.
+          bash tools/hub/build.sh linux dist/hub dist/hub-generated.tar.gz || {
+            tail -60 target/pybricks/bricks/kinebrick/build-ci.log; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: hub-linux
