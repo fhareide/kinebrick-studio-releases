@@ -160,7 +160,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: |
-          brew install --quiet cairo
+          # Apple's make (3.81) does not see the submodule Pybricks' Makefile clones mid-build.
+          brew install --quiet cairo make
+          echo "$(brew --prefix)/opt/make/libexec/gnubin" >> "$GITHUB_PATH"
           python -m pip install --quiet cairosvg freetype-py gitpython pillow
           echo "DYLD_FALLBACK_LIBRARY_PATH=$(brew --prefix)/lib" >> "$GITHUB_ENV"
         if: runner.os == 'macOS'
