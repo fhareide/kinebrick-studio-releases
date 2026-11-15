@@ -61,6 +61,11 @@ jobs:
           ref: ${{ env.SOURCE_REF }}
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           persist-credentials: false
+      # Pybricks' build turns its images into C with Pillow.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --quiet pillow
       - name: Build the hub programs
         run: |
           # The script prints only the log's error lines; show its end too when it fails.
@@ -147,6 +152,13 @@ jobs:
         with:
           name: ${{ runner.os == 'Windows' && 'hub-generated' || 'hub-linux' }}
           path: ${{ runner.os == 'Windows' && 'dist/hub-generated' || 'dist/hub' }}
+      # Pybricks' build turns its images into C with Pillow.
+      - uses: actions/setup-python@v5
+        if: runner.os == 'macOS'
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --quiet pillow
+        if: runner.os == 'macOS'
       - uses: microsoft/setup-msbuild@v2
         if: runner.os == 'Windows'
       - name: Hub programs
